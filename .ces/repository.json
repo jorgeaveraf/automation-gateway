@@ -1,0 +1,29 @@
+{
+  "bootstrap": "HEALTHY",
+  "enabled_at": 1790626230,
+  "evidence": [
+    "automation_gateway/app.py",
+    "requirements.txt",
+    "README.md",
+    "automation_gateway/tests/test_automation_gateway.py",
+    ".github/workflows/ci.yml",
+    "automation_gateway/schemas/connection_status.py",
+    "automation_gateway/schemas/__init__.py",
+    "docker-compose.yml",
+    "Dockerfile",
+    "automation_gateway/api/dependencies.py",
+    "automation_gateway/core/errors.py",
+    "automation_gateway/application/ports.py",
+    "automation_gateway/application/publish_connection_status.py",
+    "automation_gateway/core/config.py",
+    "automation_gateway/api/connection_status.py",
+    "automation_gateway/__init__.py",
+    "automation_gateway/core/__init__.py",
+    "automation_gateway/api/__init__.py",
+    "automation_gateway/application/__init__.py"
+  ],
+  "id": "ec4bc2af-ab7f-4460-b3df-af2e0d514313",
+  "ledger_schema": 1,
+  "schema": 1,
+  "trust": "GENERATED"
+}

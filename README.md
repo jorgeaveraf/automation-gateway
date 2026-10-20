@@ -1,72 +1,67 @@
-# Ingestion Gateway
+# Automation Gateway
 
-FastAPI microservice that receives CSV uploads, stores them in the shared Airflow input volume, triggers the corresponding Airflow DAG, and provides polling for run status and outputs.
+FastAPI service that receives normalized results from automation systems and publishes QBO connection status through an explicit outbound port.
 
-## Prerequisites
+The current implementation forwards validated status updates to QBO Gateway. It does not access PostgreSQL directly and contains no n8n or production-specific integration.
+
+## Requirements
+
 - Python 3.11+
-- Docker + Docker Compose
-- Access to the shared Airflow input volume (mounted at `/shared/input`)
+- Docker and Docker Compose (optional)
 
-## Configuration
-Set environment variables (or copy `.env.example` to `.env` and adjust).  
-**Importante:** `AIRFLOW_API_URL` debe incluir `/api/v1` (p. ej. `http://host.docker.internal:8080/api/v1`). Si falta ese sufijo, las llamadas devolverán 404 HTML desde el webserver de Airflow.
-```
-cp .env.example .env
-# then edit values as needed
-```
+## Local configuration
+
+Copy `.env.example` to `.env` and use local-only values. The protected endpoint requires `AUTOMATION_GATEWAY_API_KEY`. Outbound publication requires `QBO_GATEWAY_BASE_URL`, the QBO admin `QBO_GATEWAY_API_KEY`, and an optional `QBO_GATEWAY_TIMEOUT_SECONDS`.
 
 ## Run locally
+
 ```bash
 pip install -r requirements.txt
-uvicorn ingestion_gateway.app:app --reload --port 8000
+uvicorn automation_gateway.app:app --reload --port 8000
 ```
-Shared input folder must exist; the app will create it if missing.
-
-## Docker
-```bash
-docker compose -f docker-compose.ingestion-gateway.yml up --build
-```
-This mounts `../data_input` as `/shared/input` to match Airflow.
 
 ## API
-### `POST /ingest/part1`
-### `POST /ingest/part2`
-Multipart form fields:
-- `week_year` (int)
-- `week_num` (int)
-- `notify_email` (email)
-- `files` (one or more CSV uploads)
-
-Behavior:
-1. Validate CSVs (extension + readable sample).
-2. Create `/shared/input/runs/<dag_run_id>/`.
-3. Persist uploads inside that folder.
-4. Trigger Airflow DAG (`part1_ingestion` or `part2_qbo_export`) with `input_subdir=runs/<dag_run_id>`.
-5. Respond `{ run_id, dag_run_id, status: "submitted" }`.
-
-### `GET /poll/{dag_run_id}?dag=part1|part2`
-Polls Airflow until success/failed (bounded attempts) and returns run state plus discovered output files at `/shared/input/runs/<dag_run_id>/outputs/*.csv`.
 
 ### `GET /health`
-Simple liveness check.
 
-## Example requests
-```bash
-# Submit part1
-curl -X POST http://localhost:8000/ingest/part1 \
-  -F week_year=2023 -F week_num=40 -F notify_email=user@example.com \
-  -F "files=@sample.csv"
+Public liveness endpoint. It does not check external dependencies.
 
-# Poll
-curl "http://localhost:8000/poll/<dag_run_id>?dag=part1"
+### `PUT /v1/connections/{client_id}/status`
+
+Receives the latest observed state for a client connection. It requires `X-API-Key`.
+
+```json
+{
+  "provider": "qbo",
+  "environment": "prod",
+  "is_connected": true,
+  "checked_at": "2026-09-25T15:30:00Z",
+  "correlation_id": "7ac383c5-7d11-488f-8ba8-11bd2c02023d"
+}
 ```
 
-## Testing
+`is_connected` must be a JSON boolean. A successful QBO CompanyInfo check is published as `true`; a check that remains unsuccessful after Airflow exhausts its retries is published as `false`. Allowed environments are `prod` and `sandbox`.
+
+The QBO publisher calls `PUT /clients/{client_id}/connection-status`. Missing publisher configuration returns `503`, QBO transport or HTTP failures return `502`, and timeouts return `504`.
+
+## Tests
+
 ```bash
 pytest
 ```
 
-## Deployment Notes
-- Mount the same shared input volume used by Airflow at `/shared/input`.
-- The gateway never deletes outputs; Airflow owns cleanup.
-- The service only communicates with Airflow via REST, keeping concerns separated.
+Unit tests use in-memory HTTP transports and make no external HTTP or database calls. The test-only ASGI app can accept local Docker publications without forwarding them.
+
+## Local Docker
+
+```bash
+docker compose up --build
+```
+
+The local Compose file binds the service only to `127.0.0.1:8001`. The image runs as an unprivileged user and exposes a container health check backed by `GET /health`. No shared filesystem volume is required.
+
+## Delivery workflows
+
+The CI workflow runs application import validation, the test suite, and a container build for pull requests and pushes to `develop` or `main`. It does not publish images or deploy.
+
+Production delivery is intentionally separate and manual. The deploy workflow can run only from `main`, publishes an immutable image tagged with the commit SHA, and gates the SSH deployment through the protected `production` environment. It requires the environment secrets `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, and a pinned `VPS_KNOWN_HOSTS`; it also expects `/usr/local/sbin/deploy-automation-gateway` to exist on the target host. That VPS script and environment setup are not part of this local iteration, so the workflow must not be run until the server-side deployment preparation is complete.

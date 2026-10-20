@@ -1,0 +1,53 @@
+{
+  "info": {
+    "name": "Automation Gateway (Local)",
+    "description": "Local-only requests for the Automation Gateway foundation.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000"
+    },
+    {
+      "key": "api_key",
+      "value": "replace-with-a-local-secret"
+    },
+    {
+      "key": "client_id",
+      "value": "070b2e37-aa28-4911-b2b2-e493678d38f5"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/health"
+      }
+    },
+    {
+      "name": "Publish connection status",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "X-API-Key",
+            "value": "{{api_key}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"provider\": \"qbo\",\n  \"environment\": \"prod\",\n  \"is_connected\": true,\n  \"checked_at\": \"2026-09-25T15:30:00Z\",\n  \"correlation_id\": \"7ac383c5-7d11-488f-8ba8-11bd2c02023d\"\n}"
+        },
+        "url": "{{base_url}}/v1/connections/{{client_id}}/status"
+      }
+    }
+  ]
+}
