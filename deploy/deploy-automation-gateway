@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly APP_DIR="/root/automations/automation-gateway"
+readonly COMPOSE_FILE="${APP_DIR}/docker-compose.production.yml"
+readonly SERVICE_ENV_FILE="${APP_DIR}/.env"
+readonly RELEASE_ENV_FILE="${APP_DIR}/.release.env"
+readonly SERVICE_NAME="automation-gateway"
+readonly CONTAINER_NAME="automation-gateway"
+readonly IMAGE_REPOSITORY="ghcr.io/jorgeaveraf/automation-gateway"
+readonly HEALTH_TIMEOUT_SECONDS=90
+readonly DEPLOY_LOCK_FILE="/run/lock/automation-gateway-deploy.lock"
+
+sha="${1:-}"
+if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "Usage: $0 <40-character-lowercase-git-sha>" >&2
+  exit 64
+fi
+
+for command_name in docker curl flock; do
+  if ! command -v "${command_name}" >/dev/null 2>&1; then
+    echo "Required command is unavailable: ${command_name}" >&2
+    exit 69
+  fi
+done
+
+if ! docker compose version >/dev/null 2>&1; then
+  echo "Docker Compose v2 is required" >&2
+  exit 69
+fi
+
+if [[ ! -f "${COMPOSE_FILE}" ]]; then
+  echo "Missing production Compose file: ${COMPOSE_FILE}" >&2
+  exit 66
+fi
+
+if [[ ! -f "${SERVICE_ENV_FILE}" ]]; then
+  echo "Missing service environment file: ${SERVICE_ENV_FILE}" >&2
+  exit 66
+fi
+
+if [[ "$(stat -c '%a' "${SERVICE_ENV_FILE}")" != "600" ]]; then
+  echo "${SERVICE_ENV_FILE} must have mode 600" >&2
+  exit 77
+fi
+
+for required_setting in \
+  AUTOMATION_GATEWAY_API_KEY \
+  QBO_GATEWAY_BASE_URL \
+  QBO_GATEWAY_API_KEY; do
+  if ! grep -Eq "^${required_setting}=.+$" "${SERVICE_ENV_FILE}"; then
+    echo "${SERVICE_ENV_FILE} is missing a non-empty ${required_setting}" >&2
+    exit 78
+  fi
+done
+
+exec 9>"${DEPLOY_LOCK_FILE}"
+if ! flock --nonblock 9; then
+  echo "Another Automation Gateway deployment is already running" >&2
+  exit 75
+fi
+
+readonly target_image="${IMAGE_REPOSITORY}:${sha}"
+previous_image=""
+if [[ -f "${RELEASE_ENV_FILE}" ]]; then
+  previous_image="$(sed -n 's/^AUTOMATION_IMAGE=//p' "${RELEASE_ENV_FILE}" | head -n 1)"
+fi
+
+create_release_file() {
+  local image="$1"
+  local temporary_file
+  temporary_file="$(mktemp "${APP_DIR}/.release.env.XXXXXX")"
+  chmod 600 "${temporary_file}"
+  printf 'AUTOMATION_IMAGE=%s\n' "${image}" > "${temporary_file}"
+  printf '%s\n' "${temporary_file}"
+}
+
+compose_with_env() {
+  local release_file="$1"
+  shift
+  docker compose \
+    --project-directory "${APP_DIR}" \
+    --env-file "${release_file}" \
+    --file "${COMPOSE_FILE}" \
+    "$@"
+}
+
+wait_until_healthy() {
+  local deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
+  local health_status
+
+  while (( SECONDS < deadline )); do
+    health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
+    if [[ "${health_status}" == "healthy" ]]; then
+      curl --fail --silent --show-error \
+        --max-time 3 \
+        "http://127.0.0.1:8002/health" \
+        >/dev/null
+      return 0
+    fi
+    if [[ "${health_status}" == "unhealthy" ]]; then
+      return 1
+    fi
+    sleep 2
+  done
+
+  return 1
+}
+
+rollback() {
+  echo "Deployment health validation failed; starting rollback" >&2
+  if [[ "${previous_image}" =~ ^ghcr\.io/jorgeaveraf/automation-gateway:[0-9a-f]{40}$ ]]; then
+    compose_with_env "${RELEASE_ENV_FILE}" up --detach --no-deps --force-recreate "${SERVICE_NAME}"
+    if wait_until_healthy; then
+      echo "Rollback restored ${previous_image}" >&2
+    else
+      echo "Rollback image did not become healthy" >&2
+    fi
+  else
+    compose_with_env "${candidate_release_file}" rm --stop --force "${SERVICE_NAME}" >/dev/null 2>&1 || true
+    echo "No previous release was available; failed first deployment was removed" >&2
+  fi
+}
+
+echo "Pulling ${target_image}"
+docker pull "${target_image}"
+candidate_release_file="$(create_release_file "${target_image}")"
+trap 'rm -f "${candidate_release_file}"' EXIT
+
+if ! compose_with_env "${candidate_release_file}" config --quiet; then
+  rollback
+  exit 78
+fi
+
+if ! compose_with_env "${candidate_release_file}" up --detach --no-deps --force-recreate "${SERVICE_NAME}"; then
+  rollback
+  exit 70
+fi
+
+if ! wait_until_healthy; then
+  rollback
+  exit 70
+fi
+
+mv -f "${candidate_release_file}" "${RELEASE_ENV_FILE}"
+trap - EXIT
+
+echo "Automation Gateway deployed successfully"
+echo "image=${target_image}"
+echo "container=${CONTAINER_NAME}"
