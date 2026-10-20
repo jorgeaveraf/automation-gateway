@@ -1,0 +1,25 @@
+name: automation-gateway
+
+services:
+  automation-gateway:
+    image: ${AUTOMATION_IMAGE:?AUTOMATION_IMAGE must contain an immutable SHA tag}
+    container_name: automation-gateway
+    env_file:
+      - ${AUTOMATION_GATEWAY_ENV_FILE:-.env}
+    ports:
+      - "127.0.0.1:8002:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

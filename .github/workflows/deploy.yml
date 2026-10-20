@@ -3,6 +3,10 @@ name: Automation Gateway Deploy
 on:
   workflow_dispatch:
 
+concurrency:
+  group: automation-gateway-production
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
     if: github.ref == 'refs/heads/main'

@@ -65,3 +65,5 @@ The local Compose file binds the service only to `127.0.0.1:8001`. The image run
 The CI workflow runs application import validation, the test suite, and a container build for pull requests and pushes to `develop` or `main`. It does not publish images or deploy.
 
 Production delivery is intentionally separate and manual. The deploy workflow can run only from `main`, publishes an immutable image tagged with the commit SHA, and gates the SSH deployment through the protected `production` environment. It requires the environment secrets `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, and a pinned `VPS_KNOWN_HOSTS`; it also expects `/usr/local/sbin/deploy-automation-gateway` to exist on the target host. That VPS script and environment setup are not part of this local iteration, so the workflow must not be run until the server-side deployment preparation is complete.
+
+Version-controlled server preparation artifacts live in `deploy/`. They define a parallel loopback-only deployment on port `8002`, immutable SHA releases, health validation, and rollback without operating on the legacy Ingestion Gateway deployment.
