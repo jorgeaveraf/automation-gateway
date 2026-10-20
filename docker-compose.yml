@@ -1,17 +1,14 @@
-version: "3.9"
+name: automation-gateway
 
 services:
-  ingestion-gateway:
-    image: ${INGESTION_IMAGE}
-    container_name: ingestion-gateway
+  automation-gateway:
+    build: .
+    image: automation-gateway:local
+    container_name: automation-gateway-local
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
-      - "8001:8000"
-    volumes:
-      - /root/automations/data_input:/shared/input
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    user: "50000:0"
+      - "127.0.0.1:8001:8000"
+    restart: "no"
     
