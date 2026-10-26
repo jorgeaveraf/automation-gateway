@@ -1,8 +1,8 @@
 # Automation Gateway
 
-FastAPI service that receives normalized results from automation systems and publishes QBO connection status through an explicit outbound port.
+FastAPI service that accepts versioned automation jobs and enqueues them in Redis Lists.
 
-The current implementation forwards validated status updates to QBO Gateway. It does not access PostgreSQL directly and contains no n8n or production-specific integration.
+The gateway validates the generic job envelope, routes by `kind`, and never interprets the payload. Redis atomically deduplicates `event_id` and appends new jobs to a Redis List; the gateway does not access PostgreSQL or publish through Redis Streams or Pub/Sub.
 
 ## Requirements
 
@@ -11,7 +11,7 @@ The current implementation forwards validated status updates to QBO Gateway. It 
 
 ## Local configuration
 
-Copy `.env.example` to `.env` and use local-only values. The protected endpoint requires `AUTOMATION_GATEWAY_API_KEY`. Outbound publication requires `QBO_GATEWAY_BASE_URL`, the QBO admin `QBO_GATEWAY_API_KEY`, and an optional `QBO_GATEWAY_TIMEOUT_SECONDS`.
+Copy `.env.example` to `.env` and use local-only values. The protected endpoint requires `AUTOMATION_GATEWAY_API_KEY`, `REDIS_URL`, and `REDIS_JOB_QUEUES`. `JOB_DEDUPLICATION_TTL_SECONDS` defaults to 30 days.
 
 ## Run locally
 
@@ -26,23 +26,27 @@ uvicorn automation_gateway.app:app --reload --port 8000
 
 Public liveness endpoint. It does not check external dependencies.
 
-### `PUT /v1/connections/{client_id}/status`
+### `POST /v1/jobs`
 
-Receives the latest observed state for a client connection. It requires `X-API-Key`.
+Accepts a versioned job envelope and requires `X-API-Key`. `event_id` is a UUID, `kind` identifies the job version, and `payload` is an opaque JSON object. Redis List routing is configured as a JSON object mapping kinds to queue keys.
 
 ```json
 {
-  "provider": "qbo",
-  "environment": "prod",
-  "is_connected": true,
-  "checked_at": "2026-09-25T15:30:00Z",
-  "correlation_id": "7ac383c5-7d11-488f-8ba8-11bd2c02023d"
+  "event_id": "070b2e37-aa28-4911-b2b2-e493678d38f5",
+  "kind": "qbo.connection_checked.v1",
+  "payload": {
+    "client_id": "477751f2-1142-4283-a3c0-387f8aa45fbd",
+    "provider": "qbo",
+    "environment": "sandbox",
+    "is_connected": false,
+    "checked_at": "2026-10-22T12:00:00Z",
+    "correlation_id": "7ac383c5-7d11-488f-8ba8-11bd2c02023d",
+    "notification": {"candidate": true, "observed_previous_connected": true}
+  }
 }
 ```
 
-`is_connected` must be a JSON boolean. A successful QBO CompanyInfo check is published as `true`; a check that remains unsuccessful after Airflow exhausts its retries is published as `false`. Allowed environments are `prod` and `sandbox`.
-
-The QBO publisher calls `PUT /clients/{client_id}/connection-status`. Missing publisher configuration returns `503`, QBO transport or HTTP failures return `502`, and timeouts return `504`.
+Both a newly enqueued event and a duplicate return `202` with `accepted: true`; `duplicate` distinguishes the cases. A response is sent only after Redis confirms the atomic operation. Unconfigured or unavailable Redis returns `503`; an unmapped kind returns `422`.
 
 ## Tests
 
@@ -50,7 +54,7 @@ The QBO publisher calls `PUT /clients/{client_id}/connection-status`. Missing pu
 pytest
 ```
 
-Unit tests use in-memory HTTP transports and make no external HTTP or database calls. The test-only ASGI app can accept local Docker publications without forwarding them.
+Unit tests use a fake Redis client and require no Redis service. The test-only ASGI app can accept local Docker jobs without an external queue.
 
 ## Local Docker
 
@@ -59,6 +63,71 @@ docker compose up --build
 ```
 
 The local Compose file binds the service only to `127.0.0.1:8001`. The image runs as an unprivileged user and exposes a container health check backed by `GET /health`. No shared filesystem volume is required.
+
+The separate `automation-worker` service consumes one Redis List in FIFO order
+with an atomic pending-to-processing move. It resumes unfinished jobs after restart,
+defers transient failures to a target-specific retry lane so other clients can
+continue, and preserves the order of events for each client and environment.
+Retry lanes use Redis Lists plus a sorted set of due times; they do not use Redis
+Streams. A permanently missing QBO client or credential, or an equal-timestamp
+status conflict, goes to the recoverable `:dead` List instead of retrying forever.
+Inspect dead-letter jobs and correct their cause before republishing them as a
+new event through the Gateway; they are never replayed automatically. Reuse of
+the original event ID is subject to the Gateway's idempotency window.
+The worker writes the
+status through QBO Gateway's existing endpoint, re-checks the saved value, and
+only then evaluates notification eligibility. It queries a sent-only n8n ledger
+adapter before and after calling the Notification Router. An HTTP success alone
+never counts as a delivered Slack notification. One worker replica is supported;
+do not scale this service without adding per-target concurrency control.
+
+Set `.env.worker` from `.env.worker.example` for local use. The worker refuses to
+start unless `NOTIFICATION_ROUTER_RULE_READY=true`; set that only after the
+dedicated rule and template have been verified through controlled editor tests
+and explicitly activated. Local Docker tests use the included mock, not a real
+client or the live n8n endpoint.
+
+`NOTIFICATION_SLACK_DESTINATION_ID` is the DM conversation ID, not the Slack
+user ID. The worker sends it as a Slack `channel` destination and looks up
+deliveries using the same recipient value. The current DM ID in the existing
+delivery table is `D0B3LSR4C1Y` for `@jorge.vera`; keep it configurable.
+
+The isolated Docker contract test uses only the ACME sandbox mock and no real
+external services:
+
+```bash
+docker compose -f automation_gateway/tests/support/docker-compose.worker.yml up -d --build
+# POST a sandbox job to 127.0.0.1:18092/v1/jobs, then inspect
+# 127.0.0.1:18091/sandbox-state
+docker compose -f automation_gateway/tests/support/docker-compose.worker.yml down
+```
+
+The worker and Airflow read confirmed `status=sent` deliveries through the
+Notification Router's authenticated `POST
+/webhook/automation/notification-ledger/last-sent/v1`. Neither client needs
+an n8n Data Tables API key. The webhook fixes the lookup to the approved Slack
+DM and returns only `last_notified_at` (or `null`); the worker additionally
+filters by episode scope. Both clients reject malformed responses.
+The router
+webhook must accept the existing `notification_router.request` body, commit
+its delivery row, and persist `notification_scope_key` in a nullable column or
+metadata. These n8n configuration steps are prerequisites, not changes to QBO
+Gateway. The QBO rule and template are captured in
+`automation_worker/n8n_qbo_disconnect_draft.json` and installed as active n8n
+Data Table rows 43 and 51. A controlled full-workflow test sent one Slack DM
+to `D0B3LSR4C1Y`; retrying the same request was suppressed. The three
+pre-existing pinned outputs were restored afterward. On 2026-10-23 the Router
+webhook was published at `POST /webhook/automation/notification-router/v1` with a
+dedicated `X-API-Key` Header Auth credential; its published version is
+`830f097e-dc53-4836-8dd3-2072f823152b`. A production-URL test with a
+fictitious sandbox client returned `sent` and `committed=true`; delivery row 79
+records one Slack message to `D0B3LSR4C1Y`. The same request was suppressed on
+retry, and a request without the key returned 403. The ingress and remaining
+worker validation gates are documented in
+`automation_worker/n8n_ingress_draft.md`. Both n8n webhooks use the dedicated
+`X-API-Key` Header Auth credential; no key is sent to QBO Gateway. The worker
+remains undeployed; publishing the webhook did not enable periodic monitoring
+or start the worker.
 
 ## Delivery workflows
 

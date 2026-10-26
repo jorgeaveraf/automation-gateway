@@ -1,25 +1,61 @@
-name: automation-gateway
+name: automation-gateway-v2
 
 services:
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
+
   automation-gateway:
     image: ${AUTOMATION_IMAGE:?AUTOMATION_IMAGE must contain an immutable SHA tag}
-    container_name: automation-gateway
-    env_file:
-      - ${AUTOMATION_GATEWAY_ENV_FILE:-.env}
-    ports:
-      - "127.0.0.1:8002:8000"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    container_name: automation-gateway-v2
+    networks:
+      default:
+        aliases: [automation-gateway-v2]
+    env_file: ["${AUTOMATION_GATEWAY_ENV_FILE:-.env}"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports: ["127.0.0.1:8003:8000"]
+    depends_on:
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).read()"]
+      interval: 10s
+      timeout: 3s
+      retries: 9
     restart: unless-stopped
     read_only: true
-    tmpfs:
-      - /tmp:size=16m,mode=1777
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
     logging:
       driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      options: {max-size: "10m", max-file: "3"}
+
+  automation-worker:
+    image: ${AUTOMATION_WORKER_IMAGE:?AUTOMATION_WORKER_IMAGE must contain an immutable SHA tag}
+    env_file: ["${AUTOMATION_WORKER_ENV_FILE:-.env.worker}"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      redis: {condition: service_healthy}
+      automation-gateway: {condition: service_healthy}
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  redis-data:

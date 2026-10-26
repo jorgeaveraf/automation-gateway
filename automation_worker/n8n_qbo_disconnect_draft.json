@@ -1,0 +1,37 @@
+{
+  "rule": {
+    "rule_id": "qbo_connection_disconnected_slack",
+    "active": true,
+    "priority": 2200,
+    "rule_version": 1,
+    "contract_type": "notification_router.request",
+    "event_type": "qbo_connection_disconnected",
+    "source_workflow": "QBO Connection Monitor",
+    "source_node": "Automation Worker",
+    "entity_name": "",
+    "matcher_key": "field_conditions",
+    "match_config_json": "{\"all\":[{\"operator\":\"equals\",\"path\":\"error.code\",\"value\":\"QBO_CONNECTION_DISCONNECTED\"}]}",
+    "classification_json": "{\"known\":true,\"error_key\":\"QBO_CONNECTION_DISCONNECTED\",\"error_type\":\"authorization\",\"category\":\"qbo_connectivity\",\"service\":\"qbo\",\"entity\":\"credential\",\"element\":\"connection\",\"human_correctable\":true}",
+    "actions_json": "[{\"action_id\":\"qbo_disconnect_slack\",\"audience\":\"developer\",\"channel\":\"slack\",\"recipient\":\"D0B3LSR4C1Y\",\"destination_type\":\"channel\",\"format\":\"mrkdwn\",\"template_entity_name\":\"Headquarters\",\"template_scope\":\"qbo_connectivity\",\"template_key\":\"connection_disconnected\",\"template_case\":\"QBO_CONNECTION_DISCONNECTED\",\"dedupe\":{\"enabled\":true,\"strategy\":\"request_id\",\"base_path\":\"execution.request_id\",\"channel_key\":\"slack\",\"error_key\":\"QBO_CONNECTION_DISCONNECTED\"}}]",
+    "dedupe_strategy": "request_id",
+    "aggregation_strategy": "none",
+    "notes": "Draft only. Publish after ingress and recipient are verified. Episode and 48-hour cadence are enforced by the automation worker."
+  },
+  "template": {
+    "entity_name": "Headquarters",
+    "scope": "qbo_connectivity",
+    "template_key": "connection_disconnected",
+    "template_case": "QBO_CONNECTION_DISCONNECTED",
+    "template_name": "QBO connection disconnected",
+    "channel": "slack",
+    "format": "mrkdwn",
+    "template_version": 1,
+    "subject_template": "",
+    "template_html": "",
+    "template_text": "⚠️ *Conexión de QuickBooks desconectada*\nCliente: *{{entity.entity_name}}*\nAmbiente: {{entity.environment}}\nÚltima revisión: {{context.checked_at}}\nClient ID: `{{entity.client_id}}`\nAcción: reconectar QuickBooks en FinOps.",
+    "required_paths_json": "[\"entity.entity_name\",\"entity.client_id\",\"entity.environment\",\"context.checked_at\"]",
+    "template_hash": "qbo-connection-disconnected-v1",
+    "is_active": true,
+    "notes": "Draft only; Slack DM destination is supplied by the worker's notification request."
+  }
+}

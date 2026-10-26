@@ -1,49 +1,19 @@
-# Automation Gateway deployment preparation
+# Gateway v2 production rollout
 
-These files prepare a parallel, loopback-only Automation Gateway deployment. They do not replace the legacy `ingestion-gateway` container or change Nginx.
+The existing `automation-gateway` project stays on port 8002 while this release starts a separate `automation-gateway-v2` project on loopback port 8003. Its Compose stack starts Redis with an AOF volume, the API, and one worker. The image carries the exact production Compose file used by the deploy script. No QBO Gateway, QBO database, Nginx, or old Gateway service is modified.
 
-## Intended VPS layout
+On the first v2 release, the script preserves the old Compose as `docker-compose.legacy.yml` and its image tag as `.release.legacy.env`. These allow an explicit restart of the old project during the Airflow transition.
 
-```text
-/root/automations/automation-gateway/
-  docker-compose.production.yml
-  .env                 # secrets, mode 600, never committed
-  .release.env         # current immutable image, managed by deploy script
+## One-time preparation before merging to main
 
-/usr/local/sbin/deploy-automation-gateway
-```
+The VPS already has Docker Compose, the `deploy` account, GHCR pull access, and sudo permission for `/usr/local/sbin/deploy-automation-gateway`. Preserve them.
 
-The initial host binding is `127.0.0.1:8002`. Port `8001` remains available to the legacy service until the separate cutover iteration. The container reaches QBO Gateway through `host.docker.internal:8000`; the Compose file maps that name to the Linux host gateway.
+1. Install the reviewed `deploy/deploy-automation-gateway` as that existing root-owned executable. The new script replaces the old implementation at the same path, so sudoers need no change.
+2. Keep `/root/automations/automation-gateway/.env` root-owned, mode 600, with `AUTOMATION_GATEWAY_API_KEY` and `REDIS_JOB_QUEUES`. Its Redis URL is overridden by Compose to the private `redis` service.
+3. Create `/root/automations/automation-gateway/.env.worker` root-owned, mode 600. Supply the keys in `.env.worker.example`, production QBO and notification URLs and credentials, and set `NOTIFICATION_ROUTER_RULE_READY=true` only after the router rule is verified. Do not commit or print values.
+4. Confirm port 8003 and the project name `automation-gateway-v2` are unused. The first merge to `main` installs its Compose from the API image. There is no separate Compose copy step.
+5. Ensure the GitHub `production` environment has `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, and pinned `VPS_KNOWN_HOSTS` secrets. Configure no manual environment reviewer if main is to deploy automatically. Require the CI job on protected main.
 
-## One-time server preparation
+`develop` and pull requests run CI only. A successful push to `main` builds and publishes API and worker images tagged with the same commit SHA, then deploys them. The script validates secrets, pulls both images, extracts and validates Compose, starts Redis/API/worker, checks health, and records the release. On failure it restores prior Compose and images. The first v2 failure removes only the v2 stack; its Redis volume remains.
 
-Do not run these steps until the local artifacts and deployment plan have been approved.
-
-1. Create `/root/automations/automation-gateway` with root ownership and mode `700`.
-2. Copy `docker-compose.production.yml` into that directory.
-3. Create `.env` from `automation-gateway.env.example`, insert production secrets, and set mode `600`.
-4. Install `deploy-automation-gateway` at `/usr/local/sbin/deploy-automation-gateway`, owned by root and executable.
-5. Ensure root can pull the private GHCR image without placing a registry token in this repository.
-6. Configure the CI deployment identity with narrowly scoped passwordless sudo for this single script.
-7. Configure the GitHub `production` environment and its required reviewer plus `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, and pinned `VPS_KNOWN_HOSTS` secrets.
-
-## Deployment behavior
-
-The script accepts only a lowercase 40-character Git SHA, pulls the corresponding immutable image, writes `.release.env` atomically, recreates only the `automation-gateway` service, and waits for the image healthcheck plus loopback `/health` response.
-
-Before pulling an image, it also requires `.env` mode `600` and non-empty `AUTOMATION_GATEWAY_API_KEY`, `QBO_GATEWAY_BASE_URL`, and `QBO_GATEWAY_API_KEY` values. Secret values are never printed.
-
-If validation fails, it restores the previously recorded immutable image. On a failed first deployment, it removes only the new Automation Gateway container. It never operates on the legacy Compose project, QBO Gateway, PostgreSQL, Nginx, or Airflow.
-
-## Local validation
-
-Use placeholder values only:
-
-```bash
-AUTOMATION_IMAGE=ghcr.io/jorgeaveraf/automation-gateway:0000000000000000000000000000000000000000 \
-AUTOMATION_GATEWAY_ENV_FILE=automation-gateway.env.example \
-docker compose --env-file deploy/automation-gateway.env.example \
-  -f deploy/docker-compose.production.yml config --quiet
-
-bash -n deploy/deploy-automation-gateway
-```
+Only after Gateway v2 is healthy should Airflow switch its private network and base URL. Keep the old Gateway until the Airflow cutover is validated. Do not delete the Redis volume during rollback.

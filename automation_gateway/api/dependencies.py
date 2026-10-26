@@ -3,19 +3,15 @@ from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException, status
 
-from automation_gateway.application.ports import ConnectionStatusPublisher
+from automation_gateway.application.ports import JobQueue
 from automation_gateway.core.config import Settings, get_settings
-from automation_gateway.core.errors import PublisherNotConfiguredError
-from automation_gateway.infrastructure.qbo_gateway_publisher import (
-    QboGatewayConnectionStatusPublisher,
-)
+from automation_gateway.core.errors import JobQueueNotConfiguredError
+from automation_gateway.infrastructure.redis_job_queue import RedisListJobQueue
 
 
-class UnconfiguredConnectionStatusPublisher:
-    async def publish(self, status_update) -> None:
-        raise PublisherNotConfiguredError(
-            "Connection status publisher is not configured"
-        )
+class UnconfiguredJobQueue:
+    async def enqueue(self, job) -> bool:
+        raise JobQueueNotConfiguredError("Redis job queue is not configured")
 
 
 def require_api_key(
@@ -38,15 +34,13 @@ def require_api_key(
         )
 
 
-def get_connection_status_publisher(
+def get_job_queue(
     settings: Settings = Depends(get_settings),
-) -> ConnectionStatusPublisher:
-    base_url = settings.qbo_gateway_base_url
-    api_key = settings.qbo_gateway_api_key
-    if not base_url or api_key is None:
-        return UnconfiguredConnectionStatusPublisher()
-    return QboGatewayConnectionStatusPublisher(
-        base_url=base_url,
-        api_key=api_key.get_secret_value(),
-        timeout_seconds=settings.qbo_gateway_timeout_seconds,
+) -> JobQueue:
+    if not settings.redis_url or not settings.redis_job_queues:
+        return UnconfiguredJobQueue()
+    return RedisListJobQueue(
+        redis_url=settings.redis_url,
+        queue_by_kind=settings.redis_job_queues,
+        deduplication_ttl_seconds=settings.job_deduplication_ttl_seconds,
     )

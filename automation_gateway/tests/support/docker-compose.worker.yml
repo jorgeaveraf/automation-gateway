@@ -1,0 +1,44 @@
+name: automation-worker-sandbox-test
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+
+  sandbox-mock:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    command: ["uvicorn", "automation_gateway.tests.support.sandbox_services:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:18091:8000"
+
+  gateway:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    environment:
+      AUTOMATION_GATEWAY_API_KEY: local-sandbox-test-only
+      REDIS_URL: redis://redis:6379/0
+      REDIS_JOB_QUEUES: '{"qbo.connection_checked.v1":"automation:jobs:qbo.connection_checked.v1"}'
+    ports:
+      - "127.0.0.1:18092:8000"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile.worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      QBO_GATEWAY_BASE_URL: http://sandbox-mock:8000
+      QBO_GATEWAY_API_KEY: local-sandbox-test-only
+      NOTIFICATION_LEDGER_URL: http://sandbox-mock:8000/ledger
+      NOTIFICATION_ROUTER_URL: http://sandbox-mock:8000/router
+      NOTIFICATION_ROUTER_API_KEY: local-sandbox-test-only
+      NOTIFICATION_SLACK_DESTINATION_ID: D0B3LSR4C1Y
+      NOTIFICATION_ROUTER_RULE_READY: "true"
+    depends_on:
+      - redis
+      - sandbox-mock

@@ -1,8 +1,8 @@
 from typing import Protocol
 
-from automation_gateway.schemas.connection_status import ConnectionStatusResponse
+from automation_gateway.schemas.jobs import JobEnvelope
 
 
-class ConnectionStatusPublisher(Protocol):
-    async def publish(self, status: ConnectionStatusResponse) -> None:
-        """Publish the latest observed connection status to its owning service."""
+class JobQueue(Protocol):
+    async def enqueue(self, job: JobEnvelope) -> bool:
+        """Atomically enqueue a new job, returning False for duplicate event IDs."""

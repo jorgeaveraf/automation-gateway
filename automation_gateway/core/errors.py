@@ -1,10 +1,10 @@
-class PublisherNotConfiguredError(RuntimeError):
-    """Raised until a concrete status publisher is configured."""
+class JobQueueNotConfiguredError(RuntimeError):
+    """Raised until a Redis job queue is configured."""
 
 
-class PublisherUnavailableError(RuntimeError):
-    """Raised when the configured destination rejects or cannot receive a publication."""
+class JobQueueUnavailableError(RuntimeError):
+    """Raised when Redis cannot confirm a job enqueue operation."""
 
 
-class PublisherTimeoutError(PublisherUnavailableError):
-    """Raised when publication exceeds the configured timeout."""
+class UnsupportedJobKindError(ValueError):
+    """Raised when a job kind has no configured Redis List route."""
