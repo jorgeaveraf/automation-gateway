@@ -78,7 +78,7 @@ docker cp "$image_container:/app/deploy/docker-compose.production.yml" "$candida
 docker rm "$image_container" >/dev/null
 trap cleanup EXIT
 grep -Eq '^name: automation-gateway-v2$' "$candidate_compose" || { echo "Unexpected Compose project" >&2; exit 78; }
-if grep -Eq '^name: automation-gateway$' "$backup_compose" && [[ ! -f "$APP_DIR/docker-compose.legacy.yml" ]]; then
+if "$had_compose" && [[ ! -f "$APP_DIR/docker-compose.legacy.yml" ]]; then
   install -m 644 "$backup_compose" "$APP_DIR/docker-compose.legacy.yml"
   if [[ -f "$RELEASE_FILE" ]]; then
     install -m 600 "$RELEASE_FILE" "$APP_DIR/.release.legacy.env"
