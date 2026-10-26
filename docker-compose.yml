@@ -1,6 +1,13 @@
 name: automation-gateway
 
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - automation-redis-local:/data
+    restart: "no"
+
   automation-gateway:
     build: .
     image: automation-gateway:local
@@ -11,4 +18,24 @@ services:
     ports:
       - "127.0.0.1:8001:8000"
     restart: "no"
+    depends_on:
+      - redis
+
+  automation-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file:
+      - path: .env.worker
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+    restart: "no"
+
+volumes:
+  automation-redis-local:
     

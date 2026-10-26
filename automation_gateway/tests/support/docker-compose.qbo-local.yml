@@ -1,0 +1,7 @@
+# Overlay for the local QBO Gateway. Keep the notification router on the local mock.
+# Use with --env-file ../qbo-gateway/.env and docker-compose.worker.yml.
+services:
+  worker:
+    environment:
+      QBO_GATEWAY_BASE_URL: http://host.docker.internal:8000
+      QBO_GATEWAY_API_KEY: ${API_KEY:?Load the local QBO Gateway .env with --env-file}

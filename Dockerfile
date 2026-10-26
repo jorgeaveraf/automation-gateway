@@ -11,6 +11,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 
 COPY automation_gateway ./automation_gateway
 COPY README.md .
+COPY deploy/docker-compose.production.yml ./deploy/docker-compose.production.yml
 
 RUN addgroup --system automation \
     && adduser --system --ingroup automation --no-create-home automation \

@@ -1,12 +1,11 @@
 # Glossary
 
-- **Connection status:** Latest observed boolean result of a client connection check, represented by `is_connected`.
-- **Publisher:** Outbound port that sends a validated status to its owning service.
-- **Correlation ID:** UUID carried in the request and published response.
-- **QBO:** Provider value shown in the documented example; expansion is UNKNOWN.
+- **Job envelope:** Versioned job metadata (`event_id`, `kind`) and opaque JSON payload submitted to the queue.
+- **Event ID:** UUID used for enqueue idempotency within the configured TTL.
+- **Job kind:** Versioned routing key mapped to a Redis List key by configuration.
 
 ## Evidence
 
 - `README.md`
 - `automation_gateway/application/ports.py`
-- `automation_gateway/schemas/connection_status.py`
+- `automation_gateway/schemas/jobs.py`
