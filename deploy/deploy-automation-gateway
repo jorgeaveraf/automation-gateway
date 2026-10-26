@@ -9,6 +9,7 @@ readonly RELEASE_FILE="$APP_DIR/.release.env"
 readonly LOCK_FILE=/run/lock/automation-gateway-deploy.lock
 readonly API_REPO=ghcr.io/jorgeaveraf/automation-gateway
 readonly WORKER_REPO=ghcr.io/jorgeaveraf/automation-worker
+readonly REGISTRY_USER=jorgeaveraf
 
 [[ $# -eq 1 && "$1" =~ ^[0-9a-f]{40}$ ]] || { echo "Usage: $0 <40-character-lowercase-git-sha>" >&2; exit 64; }
 for binary in docker curl flock; do command -v "$binary" >/dev/null || exit 69; done
@@ -37,6 +38,7 @@ fi
 candidate_compose="$(mktemp "$APP_DIR/.compose.candidate.XXXXXX")"
 candidate_release="$(mktemp "$APP_DIR/.release.candidate.XXXXXX")"
 backup_compose="$(mktemp "$APP_DIR/.compose.previous.XXXXXX")"
+registry_config="$(mktemp -d /run/automation-gateway-ghcr.XXXXXX)"
 had_compose=false
 [[ -f "$COMPOSE_FILE" ]] && { cp "$COMPOSE_FILE" "$backup_compose"; had_compose=true; }
 chmod 600 "$candidate_release"
@@ -67,9 +69,15 @@ rollback() {
     docker compose --project-directory "$APP_DIR" --env-file "$API_ENV" --env-file "$candidate_release" --file "$candidate_compose" down --remove-orphans || true
   fi
 }
-cleanup() { rm -f "$candidate_compose" "$candidate_release" "$backup_compose"; }
+cleanup() {
+  rm -f "$candidate_compose" "$candidate_release" "$backup_compose"
+  rm -f "$registry_config/config.json"
+  rmdir "$registry_config" 2>/dev/null || true
+}
 trap cleanup EXIT
 
+export DOCKER_CONFIG="$registry_config"
+docker login ghcr.io --username "$REGISTRY_USER" --password-stdin >/dev/null
 docker pull "$target_api"
 docker pull "$target_worker"
 image_container="$(docker create "$target_api")"
