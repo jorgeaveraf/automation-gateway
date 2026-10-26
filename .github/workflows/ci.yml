@@ -76,11 +76,15 @@ jobs:
     needs: publish
     runs-on: ubuntu-latest
     environment: production
+    permissions:
+      contents: read
+      packages: read
     env:
       VPS_HOST: ${{ secrets.VPS_HOST }}
       VPS_USER: ${{ secrets.VPS_USER }}
       VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
       VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+      GHCR_PULL_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Configure SSH
         run: |
@@ -90,6 +94,6 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
       - name: Deploy Gateway v2
         run: |
-          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+          printf '%s\n' "$GHCR_PULL_TOKEN" | ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
             -i ~/.ssh/id_ed25519 "$VPS_USER@$VPS_HOST" \
             "sudo -n /usr/local/sbin/deploy-automation-gateway '$GITHUB_SHA'"
