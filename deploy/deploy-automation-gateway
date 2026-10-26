@@ -1,150 +1,103 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly APP_DIR="/root/automations/automation-gateway"
-readonly COMPOSE_FILE="${APP_DIR}/docker-compose.production.yml"
-readonly SERVICE_ENV_FILE="${APP_DIR}/.env"
-readonly RELEASE_ENV_FILE="${APP_DIR}/.release.env"
-readonly SERVICE_NAME="automation-gateway"
-readonly CONTAINER_NAME="automation-gateway"
-readonly IMAGE_REPOSITORY="ghcr.io/jorgeaveraf/automation-gateway"
-readonly HEALTH_TIMEOUT_SECONDS=90
-readonly DEPLOY_LOCK_FILE="/run/lock/automation-gateway-deploy.lock"
+readonly APP_DIR=/root/automations/automation-gateway
+readonly COMPOSE_FILE="$APP_DIR/docker-compose.production.yml"
+readonly API_ENV="$APP_DIR/.env"
+readonly WORKER_ENV="$APP_DIR/.env.worker"
+readonly RELEASE_FILE="$APP_DIR/.release.env"
+readonly LOCK_FILE=/run/lock/automation-gateway-deploy.lock
+readonly API_REPO=ghcr.io/jorgeaveraf/automation-gateway
+readonly WORKER_REPO=ghcr.io/jorgeaveraf/automation-worker
+readonly REGISTRY_USER=jorgeaveraf
 
-sha="${1:-}"
-if [[ ! "${sha}" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "Usage: $0 <40-character-lowercase-git-sha>" >&2
-  exit 64
-fi
-
-for command_name in docker curl flock; do
-  if ! command -v "${command_name}" >/dev/null 2>&1; then
-    echo "Required command is unavailable: ${command_name}" >&2
-    exit 69
-  fi
+[[ $# -eq 1 && "$1" =~ ^[0-9a-f]{40}$ ]] || { echo "Usage: $0 <40-character-lowercase-git-sha>" >&2; exit 64; }
+for binary in docker curl flock; do command -v "$binary" >/dev/null || exit 69; done
+docker compose version >/dev/null
+[[ -f "$API_ENV" && -f "$WORKER_ENV" ]] || { echo "Gateway .env and .env.worker are required" >&2; exit 66; }
+[[ "$(stat -c '%a' "$API_ENV")" == 600 && "$(stat -c '%a' "$WORKER_ENV")" == 600 ]] || { echo "Environment files must have mode 600" >&2; exit 77; }
+for key in AUTOMATION_GATEWAY_API_KEY REDIS_JOB_QUEUES; do
+  grep -Eq "^$key=.+$" "$API_ENV" || { echo "Missing $key" >&2; exit 78; }
 done
-
-if ! docker compose version >/dev/null 2>&1; then
-  echo "Docker Compose v2 is required" >&2
-  exit 69
-fi
-
-if [[ ! -f "${COMPOSE_FILE}" ]]; then
-  echo "Missing production Compose file: ${COMPOSE_FILE}" >&2
-  exit 66
-fi
-
-if [[ ! -f "${SERVICE_ENV_FILE}" ]]; then
-  echo "Missing service environment file: ${SERVICE_ENV_FILE}" >&2
-  exit 66
-fi
-
-if [[ "$(stat -c '%a' "${SERVICE_ENV_FILE}")" != "600" ]]; then
-  echo "${SERVICE_ENV_FILE} must have mode 600" >&2
-  exit 77
-fi
-
-for required_setting in \
-  AUTOMATION_GATEWAY_API_KEY \
-  QBO_GATEWAY_BASE_URL \
-  QBO_GATEWAY_API_KEY; do
-  if ! grep -Eq "^${required_setting}=.+$" "${SERVICE_ENV_FILE}"; then
-    echo "${SERVICE_ENV_FILE} is missing a non-empty ${required_setting}" >&2
-    exit 78
-  fi
+for key in QBO_GATEWAY_BASE_URL QBO_GATEWAY_API_KEY NOTIFICATION_LEDGER_URL NOTIFICATION_ROUTER_URL NOTIFICATION_ROUTER_API_KEY NOTIFICATION_SLACK_DESTINATION_ID; do
+  grep -Eq "^$key=.+$" "$WORKER_ENV" || { echo "Missing $key" >&2; exit 78; }
 done
+grep -Eq '^NOTIFICATION_ROUTER_RULE_READY=true$' "$WORKER_ENV" || { echo "Notification rule readiness must be verified" >&2; exit 78; }
 
-exec 9>"${DEPLOY_LOCK_FILE}"
-if ! flock --nonblock 9; then
-  echo "Another Automation Gateway deployment is already running" >&2
-  exit 75
+exec 9>"$LOCK_FILE"
+flock -n 9 || { echo "Another Gateway deployment is running" >&2; exit 75; }
+cd "$APP_DIR"
+readonly target_api="$API_REPO:$1"
+readonly target_worker="$WORKER_REPO:$1"
+previous_api=""
+previous_worker=""
+if [[ -f "$RELEASE_FILE" ]]; then
+  previous_api="$(sed -n 's/^AUTOMATION_IMAGE=//p' "$RELEASE_FILE" | head -n 1)"
+  previous_worker="$(sed -n 's/^AUTOMATION_WORKER_IMAGE=//p' "$RELEASE_FILE" | head -n 1)"
 fi
+candidate_compose="$(mktemp "$APP_DIR/.compose.candidate.XXXXXX")"
+candidate_release="$(mktemp "$APP_DIR/.release.candidate.XXXXXX")"
+backup_compose="$(mktemp "$APP_DIR/.compose.previous.XXXXXX")"
+registry_config="$(mktemp -d /run/automation-gateway-ghcr.XXXXXX)"
+had_compose=false
+[[ -f "$COMPOSE_FILE" ]] && { cp "$COMPOSE_FILE" "$backup_compose"; had_compose=true; }
+chmod 600 "$candidate_release"
+printf 'AUTOMATION_IMAGE=%s\nAUTOMATION_WORKER_IMAGE=%s\n' "$target_api" "$target_worker" > "$candidate_release"
 
-readonly target_image="${IMAGE_REPOSITORY}:${sha}"
-previous_image=""
-if [[ -f "${RELEASE_ENV_FILE}" ]]; then
-  previous_image="$(sed -n 's/^AUTOMATION_IMAGE=//p' "${RELEASE_ENV_FILE}" | head -n 1)"
-fi
-
-create_release_file() {
-  local image="$1"
-  local temporary_file
-  temporary_file="$(mktemp "${APP_DIR}/.release.env.XXXXXX")"
-  chmod 600 "${temporary_file}"
-  printf 'AUTOMATION_IMAGE=%s\n' "${image}" > "${temporary_file}"
-  printf '%s\n' "${temporary_file}"
+compose() {
+  docker compose --project-directory "$APP_DIR" --env-file "$API_ENV" --env-file "$1" --file "$COMPOSE_FILE" "${@:2}"
 }
-
-compose_with_env() {
-  local release_file="$1"
-  shift
-  docker compose \
-    --project-directory "${APP_DIR}" \
-    --env-file "${release_file}" \
-    --file "${COMPOSE_FILE}" \
-    "$@"
-}
-
-wait_until_healthy() {
-  local deadline=$((SECONDS + HEALTH_TIMEOUT_SECONDS))
-  local health_status
-
+healthy() {
+  local deadline=$((SECONDS + 120))
   while (( SECONDS < deadline )); do
-    health_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "${CONTAINER_NAME}" 2>/dev/null || true)"
-    if [[ "${health_status}" == "healthy" ]]; then
-      curl --fail --silent --show-error \
-        --max-time 3 \
-        "http://127.0.0.1:8002/health" \
-        >/dev/null
-      return 0
-    fi
-    if [[ "${health_status}" == "unhealthy" ]]; then
-      return 1
-    fi
+    [[ "$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{end}}' automation-gateway-v2 2>/dev/null || true)" == healthy ]] &&
+      [[ "$(docker inspect -f '{{if .State.Running}}running{{end}}' automation-gateway-v2 2>/dev/null || true)" == running ]] &&
+      [[ "$(compose "$1" ps --status running --services | grep -Ec '^(redis|automation-worker)$')" == 2 ]] &&
+      curl --fail --silent --max-time 3 http://127.0.0.1:8003/health >/dev/null && return 0
     sleep 2
   done
-
   return 1
 }
-
 rollback() {
-  echo "Deployment health validation failed; starting rollback" >&2
-  if [[ "${previous_image}" =~ ^ghcr\.io/jorgeaveraf/automation-gateway:[0-9a-f]{40}$ ]]; then
-    compose_with_env "${RELEASE_ENV_FILE}" up --detach --no-deps --force-recreate "${SERVICE_NAME}"
-    if wait_until_healthy; then
-      echo "Rollback restored ${previous_image}" >&2
-    else
-      echo "Rollback image did not become healthy" >&2
-    fi
+  echo "Gateway v2 candidate failed; restoring previous release" >&2
+  if "$had_compose"; then cp "$backup_compose" "$COMPOSE_FILE"; else rm -f "$COMPOSE_FILE"; fi
+  if [[ "$previous_api" =~ ^$API_REPO:[0-9a-f]{40}$ && "$previous_worker" =~ ^$WORKER_REPO:[0-9a-f]{40}$ ]]; then
+    compose "$RELEASE_FILE" up -d --force-recreate redis automation-gateway automation-worker || true
+    healthy "$RELEASE_FILE" || echo "Rollback needs operator attention" >&2
   else
-    compose_with_env "${candidate_release_file}" rm --stop --force "${SERVICE_NAME}" >/dev/null 2>&1 || true
-    echo "No previous release was available; failed first deployment was removed" >&2
+    # This is a separate Compose project. Never touch the old Gateway or its network.
+    docker compose --project-directory "$APP_DIR" --env-file "$API_ENV" --env-file "$candidate_release" --file "$candidate_compose" down --remove-orphans || true
   fi
 }
+cleanup() {
+  rm -f "$candidate_compose" "$candidate_release" "$backup_compose"
+  rm -f "$registry_config/config.json"
+  rmdir "$registry_config" 2>/dev/null || true
+}
+trap cleanup EXIT
 
-echo "Pulling ${target_image}"
-docker pull "${target_image}"
-candidate_release_file="$(create_release_file "${target_image}")"
-trap 'rm -f "${candidate_release_file}"' EXIT
-
-if ! compose_with_env "${candidate_release_file}" config --quiet; then
-  rollback
-  exit 78
+export DOCKER_CONFIG="$registry_config"
+docker login ghcr.io --username "$REGISTRY_USER" --password-stdin >/dev/null
+docker pull "$target_api"
+docker pull "$target_worker"
+image_container="$(docker create "$target_api")"
+trap 'docker rm -f "$image_container" >/dev/null 2>&1 || true; cleanup' EXIT
+docker cp "$image_container:/app/deploy/docker-compose.production.yml" "$candidate_compose"
+docker rm "$image_container" >/dev/null
+trap cleanup EXIT
+grep -Eq '^name: automation-gateway-v2$' "$candidate_compose" || { echo "Unexpected Compose project" >&2; exit 78; }
+if "$had_compose" && [[ ! -f "$APP_DIR/docker-compose.legacy.yml" ]]; then
+  install -m 644 "$backup_compose" "$APP_DIR/docker-compose.legacy.yml"
+  if [[ -f "$RELEASE_FILE" ]]; then
+    install -m 600 "$RELEASE_FILE" "$APP_DIR/.release.legacy.env"
+  fi
 fi
-
-if ! compose_with_env "${candidate_release_file}" up --detach --no-deps --force-recreate "${SERVICE_NAME}"; then
+cp "$candidate_compose" "$COMPOSE_FILE"
+if ! compose "$candidate_release" config --quiet ||
+   ! compose "$candidate_release" up -d --force-recreate redis automation-gateway automation-worker ||
+   ! healthy "$candidate_release"; then
   rollback
   exit 70
 fi
-
-if ! wait_until_healthy; then
-  rollback
-  exit 70
-fi
-
-mv -f "${candidate_release_file}" "${RELEASE_ENV_FILE}"
-trap - EXIT
-
-echo "Automation Gateway deployed successfully"
-echo "image=${target_image}"
-echo "container=${CONTAINER_NAME}"
+mv "$candidate_release" "$RELEASE_FILE"
+echo "Gateway v2 deployed: $target_api and $target_worker"

@@ -7,14 +7,14 @@
   "variable": [
     {
       "key": "base_url",
-      "value": "http://127.0.0.1:8000"
+      "value": "http://127.0.0.1:8001"
     },
     {
       "key": "api_key",
       "value": "replace-with-a-local-secret"
     },
     {
-      "key": "client_id",
+      "key": "event_id",
       "value": "070b2e37-aa28-4911-b2b2-e493678d38f5"
     }
   ],
@@ -27,9 +27,9 @@
       }
     },
     {
-      "name": "Publish connection status",
+      "name": "Submit job",
       "request": {
-        "method": "PUT",
+        "method": "POST",
         "header": [
           {
             "key": "X-API-Key",
@@ -44,9 +44,9 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"provider\": \"qbo\",\n  \"environment\": \"prod\",\n  \"is_connected\": true,\n  \"checked_at\": \"2026-09-25T15:30:00Z\",\n  \"correlation_id\": \"7ac383c5-7d11-488f-8ba8-11bd2c02023d\"\n}"
+          "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"kind\": \"qbo.connection_checked.v1\",\n  \"payload\": {\n    \"client_id\": \"477751f2-1142-4283-a3c0-387f8aa45fbd\",\n    \"provider\": \"qbo\",\n    \"environment\": \"sandbox\",\n    \"is_connected\": false,\n    \"checked_at\": \"2026-10-26T12:00:00Z\",\n    \"correlation_id\": \"7ac383c5-7d11-488f-8ba8-11bd2c02023d\",\n    \"notification\": {\"candidate\": true, \"observed_previous_connected\": true}\n  }\n}"
         },
-        "url": "{{base_url}}/v1/connections/{{client_id}}/status"
+        "url": "{{base_url}}/v1/jobs"
       }
     }
   ]
