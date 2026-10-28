@@ -1,5 +1,31 @@
 # Notification Router webhook ingress — published
 
+## Published 2026-10-28: second QBO disconnect recipient
+
+The worker sends two independent `qbo_connection_disconnected` requests:
+the existing Slack DM `D0B3LSR4C1Y` (`destination_type=channel`) and Slack user
+`U03PQMKUR6J` (`destination_type=user`). Router active version
+`8f751ee7-6be4-46ee-a20c-f04a77c95d22` includes the following changes.
+They apply only to the QBO webhook/ledger branches; the rule,
+template, Slack node, and all other notification events remain unchanged.
+
+- `Adapt Webhook request`: retain all existing contract/source/error checks;
+  accept exactly those two `(recipient, destination_type)` pairs, requiring
+  `context.recipient`, `context.notification_recipient`, and
+  `context.communication.recipient` to agree. Reject any other recipient.
+- `Validate Ledger Query`: allow optional `recipient`, defaulting to
+  `D0B3LSR4C1Y` for the existing Airflow caller. Validate it against the same
+  two-ID allowlist and carry it to the lookup branch.
+- `Load Sent Slack Deliveries`: filter `recipient` using the validated query
+  recipient instead of the hard-coded DM ID.
+- `Select Last Sent Delivery`: compare rows to the validated query recipient
+  instead of the hard-coded DM ID. Keep the existing client, environment,
+  episode-scope, and `status=sent` checks.
+
+No manual Router execution or Slack test notification was sent during this
+publication. Local worker tests cover both recipients, separate timestamps,
+and idempotent retries; live delivery remains to be observed after rollout.
+
 The existing n8n Notification Router retains its Execute Workflow entry.
 Version `830f097e-dc53-4836-8dd3-2072f823152b` is published as of
 2026-10-23 and contains:

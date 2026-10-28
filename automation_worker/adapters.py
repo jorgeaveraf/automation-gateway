@@ -89,6 +89,7 @@ class NotificationRouterAdapter:
             lookup_url=self.ledger_url,
             client_id=client_id,
             environment=environment,
+            recipient=recipient,
             scope=scope,
         )
 

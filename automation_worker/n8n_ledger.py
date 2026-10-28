@@ -14,9 +14,10 @@ def last_sent_at(
     lookup_url: str,
     client_id: UUID,
     environment: str,
+    recipient: str,
     scope: str | None = None,
 ) -> datetime | None:
-    request = {"client_id": str(client_id), "environment": environment}
+    request = {"client_id": str(client_id), "environment": environment, "recipient": recipient}
     if scope is not None:
         request["notification_scope_key"] = scope
     response = client.post(lookup_url, json=request)

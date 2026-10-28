@@ -202,3 +202,84 @@ def test_notification_destination_must_be_a_slack_dm_conversation():
             checkpoints=FakeCheckpoints(),
             recipient="@jorge.vera",
         )
+
+
+class FakeMultiLedger:
+    def __init__(self):
+        self.sent = []
+        self.last_by_recipient = {}
+        self.fail_recipient = None
+
+    def last_sent_at(self, **kwargs):
+        return self.last_by_recipient.get(kwargs["recipient"])
+
+    def send(self, request):
+        recipient = request["context"]["recipient"]
+        if recipient == self.fail_recipient:
+            raise RuntimeError("recipient delivery failed")
+        self.sent.append(request)
+        self.last_by_recipient[recipient] = NOW + timedelta(seconds=1)
+
+
+def test_disconnect_sends_separate_requests_to_dm_and_user():
+    ledger = FakeMultiLedger()
+    processor = ConnectionProcessor(
+        qbo=FakeQbo(), notifications=ledger, checkpoints=FakeCheckpoints(),
+        recipient="D0B3LSR4C1Y", additional_user_id="U03PQMKUR6J", now=lambda: NOW,
+    )
+    assert processor.process(EVENT_ID, make_job(previous=True)) == "notified"
+    assert [request["context"]["recipient"] for request in ledger.sent] == [
+        "D0B3LSR4C1Y", "U03PQMKUR6J",
+    ]
+    assert [request["context"]["communication"]["destination_type"] for request in ledger.sent] == [
+        "channel", "user",
+    ]
+    assert len({request["execution"]["request_id"] for request in ledger.sent}) == 2
+
+
+def test_second_recipient_failure_retries_without_resending_first():
+    ledger = FakeMultiLedger()
+    ledger.fail_recipient = "U03PQMKUR6J"
+    checkpoints = FakeCheckpoints()
+    processor = ConnectionProcessor(
+        qbo=FakeQbo(), notifications=ledger, checkpoints=checkpoints,
+        recipient="D0B3LSR4C1Y", additional_user_id="U03PQMKUR6J", now=lambda: NOW,
+    )
+    with pytest.raises(RuntimeError, match="recipient delivery failed"):
+        processor.process(EVENT_ID, make_job(previous=True))
+    assert checkpoints.get(EVENT_ID, "done") is None
+    ledger.fail_recipient = None
+    assert processor.process(EVENT_ID, make_job(previous=True)) == "notified"
+    assert [request["context"]["recipient"] for request in ledger.sent] == [
+        "D0B3LSR4C1Y", "U03PQMKUR6J",
+    ]
+
+
+def test_reminder_window_is_independent_per_recipient():
+    ledger = FakeMultiLedger()
+    ledger.last_by_recipient["D0B3LSR4C1Y"] = NOW - timedelta(hours=47)
+    processor = ConnectionProcessor(
+        qbo=FakeQbo(), notifications=ledger, checkpoints=FakeCheckpoints(),
+        recipient="D0B3LSR4C1Y", additional_user_id="U03PQMKUR6J", now=lambda: NOW,
+    )
+    assert processor.process(EVENT_ID, make_job()) == "notified"
+    assert [request["context"]["recipient"] for request in ledger.sent] == ["U03PQMKUR6J"]
+
+
+def test_additional_recipient_must_be_slack_user_id():
+    with pytest.raises(ValueError, match="user ID"):
+        ConnectionProcessor(
+            qbo=FakeQbo(), notifications=FakeLedger(), checkpoints=FakeCheckpoints(),
+            recipient="D0B3LSR4C1Y", additional_user_id="@alex",
+        )
+
+
+def test_inactive_client_notifies_neither_recipient():
+    ledger = FakeMultiLedger()
+    processor = ConnectionProcessor(
+        qbo=FakeQbo(status="inactive"), notifications=ledger,
+        checkpoints=FakeCheckpoints(), recipient="D0B3LSR4C1Y",
+        additional_user_id="U03PQMKUR6J", now=lambda: NOW,
+    )
+    assert processor.process(EVENT_ID, make_job()) == "inactive"
+    assert ledger.sent == []
