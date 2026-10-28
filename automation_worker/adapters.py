@@ -45,6 +45,13 @@ class QboGatewayAdapter:
             raise PermanentJobError("QBO client no longer exists after status update")
         response.raise_for_status()
         data = response.json()
+        status = data.get("status")
+        if status not in {"active", "inactive"}:
+            raise ValueError("QBO detail has no valid client status")
+        raw_updated_at = data.get("updated_at")
+        updated_at = datetime.fromisoformat(raw_updated_at.replace("Z", "+00:00")) if raw_updated_at else None
+        if updated_at is not None and (updated_at.tzinfo is None or updated_at.utcoffset() is None):
+            raise ValueError("QBO client updated_at has no timezone")
         credentials = data.get("credentials")
         if not isinstance(credentials, list):
             raise TypeError("QBO detail omitted credentials")
@@ -55,7 +62,7 @@ class QboGatewayAdapter:
         checked_at = datetime.fromisoformat(raw) if raw else None
         if checked_at is not None and (checked_at.tzinfo is None or checked_at.utcoffset() is None):
             raise ValueError("QBO checked_at has no timezone")
-        return StoredConnection(matches[0]["is_connected"], checked_at, data["name"])
+        return StoredConnection(matches[0]["is_connected"], checked_at, data["name"], status, updated_at)
 
 
 class NotificationRouterAdapter:
