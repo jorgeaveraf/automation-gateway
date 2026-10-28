@@ -36,6 +36,7 @@ def test_qbo_adapter_uses_existing_status_contract_and_reads_detail():
             200,
             json={
                 "name": "ACME Sandbox",
+                "status": "active",
                 "credentials": [
                     {
                         "environment": "sandbox",
@@ -55,9 +56,22 @@ def test_qbo_adapter_uses_existing_status_contract_and_reads_detail():
         assert adapter.update(job()) == "updated"
         state = adapter.current(job())
     assert state.client_name == "ACME Sandbox"
+    assert state.client_status == "active"
     assert state.checked_at == NOW
     assert requests[0].url.path == f"/clients/{CLIENT_ID}/connection-status"
     assert requests[1].url.path == f"/clients/{CLIENT_ID}"
+
+
+def test_qbo_adapter_reads_inactive_client_status():
+    def handler(_request):
+        return httpx.Response(200, json={
+            "name": "ACME Sandbox",
+            "status": "inactive",
+            "credentials": [{"environment": "sandbox", "is_connected": False, "connection_checked_at": NOW.isoformat()}],
+        })
+
+    with httpx.Client(base_url="http://qbo.local", transport=httpx.MockTransport(handler)) as client:
+        assert QboGatewayAdapter(client).current(job()).client_status == "inactive"
 
 
 @pytest.mark.parametrize("method", ["PUT", "GET"])
