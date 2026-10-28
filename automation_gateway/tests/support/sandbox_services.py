@@ -74,7 +74,7 @@ async def delivery_lookup(request: Request):
         for row in deliveries.values()
         if row["status"] == "sent"
         and row["channel"] == "slack"
-        and row["recipient"] == "D0B3LSR4C1Y"
+        and row["recipient"] == data.get("recipient", "D0B3LSR4C1Y")
         and row["client_id"] == data["client_id"]
         and row["environment"] == data["environment"]
         and ("notification_scope_key" not in data or row["notification_scope_key"] == data["notification_scope_key"])

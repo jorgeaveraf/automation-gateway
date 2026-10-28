@@ -91,6 +91,7 @@ class ConnectionProcessor:
         notifications: NotificationPort,
         checkpoints: CheckpointPort,
         recipient: str,
+        additional_user_id: str | None = None,
         reminder_hours: int = 48,
         now: Callable[[], datetime] | None = None,
     ) -> None:
@@ -100,6 +101,9 @@ class ConnectionProcessor:
         if not re.fullmatch(r"D[A-Z0-9]+", recipient):
             raise ValueError("Slack notification recipient must be a DM conversation ID")
         self.recipient = recipient
+        if additional_user_id is not None and not re.fullmatch(r"U[A-Z0-9]+", additional_user_id):
+            raise ValueError("Additional Slack recipient must be a user ID")
+        self.additional_user_id = additional_user_id
         self.reminder_window = timedelta(hours=reminder_hours)
         self.now = now or (lambda: datetime.now(UTC))
 
@@ -157,87 +161,93 @@ class ConnectionProcessor:
             self.checkpoints.set(event_id, "episode", episode)
 
         scope = f"qbo_connection_disconnected:{job.client_id}:{job.environment}:{episode}"
-        last = self.notifications.last_sent_at(
-            client_id=job.client_id,
-            environment=job.environment,
-            recipient=self.recipient,
-            scope=scope,
-        )
-        if last is None and not job.notification.observed_previous_connected and episode == str(event_id):
+        notified = False
+        recipients = [(self.recipient, "channel")]
+        if self.additional_user_id:
+            recipients.append((self.additional_user_id, "user"))
+
+        for recipient, destination_type in recipients:
             last = self.notifications.last_sent_at(
                 client_id=job.client_id,
                 environment=job.environment,
-                recipient=self.recipient,
-                scope=None,
+                recipient=recipient,
+                scope=scope,
             )
-        if last is not None and self.now() - last.astimezone(UTC) < self.reminder_window:
-            self.checkpoints.set(event_id, "done", "suppressed")
-            return "suppressed"
+            if last is None and not job.notification.observed_previous_connected and episode == str(event_id):
+                last = self.notifications.last_sent_at(
+                    client_id=job.client_id,
+                    environment=job.environment,
+                    recipient=recipient,
+                    scope=None,
+                )
+            if last is not None and self.now() - last.astimezone(UTC) < self.reminder_window:
+                continue
 
-        # The router's delivery table owns final sent/dedup state. On a retry the
-        # same request_id is reused, including after an ambiguous HTTP failure.
-        request_id = f"{scope}:slack:{self.recipient}:" + (
-            "initial" if last is None else f"after:{last.astimezone(UTC).isoformat()}"
-        )
-        request = {
-            "contract_type": "notification_router.request",
-            "contract_version": "1.0",
-            "event_type": "qbo_connection_disconnected",
-            "source": {
-                "workflow_name": "QBO Connection Monitor",
-                "node_name": "Automation Worker",
-            },
-            "entity": {
-                "entity_name": current.client_name,
-                "client_id": str(job.client_id),
-                "environment": job.environment,
-            },
-            "execution": {
-                "source_execution_id": str(event_id),
-                "request_id": request_id,
-                "original_input_index": 0,
-                "occurred_at": job.checked_at.isoformat(),
-            },
-            "error": {
-                "present": True,
-                "message": f"QuickBooks connection is disconnected for {current.client_name} ({job.environment}).",
-                "name": "QboConnectionDisconnected",
-                "code": "QBO_CONNECTION_DISCONNECTED",
-                "error_type": "authorization",
-                "provider": "intuit",
-                "action_required": "reconnect_quickbooks",
-                "retryable": False,
-            },
-            "context": {
-                "notification_scope_key": scope,
-                "channel": "slack",
-                "recipient": self.recipient,
-                "notification_recipient": self.recipient,
-                "notification_destination_type": "channel",
-                "checked_at": job.checked_at.isoformat(),
-                "communication": {
-                    "destination_type": "channel",
-                    "recipient": self.recipient,
-                    "metadata": {
-                        "notification_scope_key": scope,
-                        "client_id": str(job.client_id),
-                        "environment": job.environment,
+            # Each recipient has its own ledger entry and stable retry identity.
+            request_id = f"{scope}:slack:{recipient}:" + (
+                "initial" if last is None else f"after:{last.astimezone(UTC).isoformat()}"
+            )
+            request = {
+                "contract_type": "notification_router.request",
+                "contract_version": "1.0",
+                "event_type": "qbo_connection_disconnected",
+                "source": {
+                    "workflow_name": "QBO Connection Monitor",
+                    "node_name": "Automation Worker",
+                },
+                "entity": {
+                    "entity_name": current.client_name,
+                    "client_id": str(job.client_id),
+                    "environment": job.environment,
+                },
+                "execution": {
+                    "source_execution_id": str(event_id),
+                    "request_id": request_id,
+                    "original_input_index": 0,
+                    "occurred_at": job.checked_at.isoformat(),
+                },
+                "error": {
+                    "present": True,
+                    "message": f"QuickBooks connection is disconnected for {current.client_name} ({job.environment}).",
+                    "name": "QboConnectionDisconnected",
+                    "code": "QBO_CONNECTION_DISCONNECTED",
+                    "error_type": "authorization",
+                    "provider": "intuit",
+                    "action_required": "reconnect_quickbooks",
+                    "retryable": False,
+                },
+                "context": {
+                    "notification_scope_key": scope,
+                    "channel": "slack",
+                    "recipient": recipient,
+                    "notification_recipient": recipient,
+                    "notification_destination_type": destination_type,
+                    "checked_at": job.checked_at.isoformat(),
+                    "communication": {
+                        "destination_type": destination_type,
+                        "recipient": recipient,
+                        "metadata": {
+                            "notification_scope_key": scope,
+                            "client_id": str(job.client_id),
+                            "environment": job.environment,
+                        },
                     },
                 },
-            },
-            "compatibility": {"response_profile": "default", "original_input_index": 0},
-        }
-        skipped = self._skip_ineligible_client(event_id, job, self.qbo.current(job))
-        if skipped:
-            return skipped
-        self.notifications.send(request)
-        confirmed = self.notifications.last_sent_at(
-            client_id=job.client_id,
-            environment=job.environment,
-            recipient=self.recipient,
-            scope=scope,
-        )
-        if confirmed is None or confirmed < job.checked_at:
-            raise RuntimeError("Notification Router did not confirm a sent delivery")
-        self.checkpoints.set(event_id, "done", "notified")
-        return "notified"
+                "compatibility": {"response_profile": "default", "original_input_index": 0},
+            }
+            skipped = self._skip_ineligible_client(event_id, job, self.qbo.current(job))
+            if skipped:
+                return skipped
+            self.notifications.send(request)
+            confirmed = self.notifications.last_sent_at(
+                client_id=job.client_id,
+                environment=job.environment,
+                recipient=recipient,
+                scope=scope,
+            )
+            if confirmed is None or confirmed < job.checked_at:
+                raise RuntimeError("Notification Router did not confirm a sent delivery")
+            notified = True
+        outcome = "notified" if notified else "suppressed"
+        self.checkpoints.set(event_id, "done", outcome)
+        return outcome

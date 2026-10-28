@@ -89,8 +89,12 @@ client or the live n8n endpoint.
 
 `NOTIFICATION_SLACK_DESTINATION_ID` is the DM conversation ID, not the Slack
 user ID. The worker sends it as a Slack `channel` destination and looks up
-deliveries using the same recipient value. The current DM ID in the existing
-delivery table is `D0B3LSR4C1Y` for `@jorge.vera`; keep it configurable.
+deliveries using the same recipient value. `NOTIFICATION_SLACK_ADDITIONAL_USER_ID`
+can override the additional Slack user ID (`U03PQMKUR6J` by default) for QBO
+disconnect alerts only.
+The worker sends separate requests and checks the 48-hour ledger independently
+for each destination. The current DM ID in the existing delivery table is
+`D0B3LSR4C1Y` for `@jorge.vera`; keep both values configurable.
 
 The isolated Docker contract test uses only the ACME sandbox mock and no real
 external services:
@@ -105,8 +109,10 @@ docker compose -f automation_gateway/tests/support/docker-compose.worker.yml dow
 The worker and Airflow read confirmed `status=sent` deliveries through the
 Notification Router's authenticated `POST
 /webhook/automation/notification-ledger/last-sent/v1`. Neither client needs
-an n8n Data Tables API key. The webhook fixes the lookup to the approved Slack
-DM and returns only `last_notified_at` (or `null`); the worker additionally
+an n8n Data Tables API key. The published QBO webhook accepts either approved
+recipient for QBO disconnect requests and defaults to the existing DM for
+legacy lookups. It returns only
+`last_notified_at` (or `null`); the worker additionally
 filters by episode scope. Both clients reject malformed responses.
 The router
 webhook must accept the existing `notification_router.request` body, commit
