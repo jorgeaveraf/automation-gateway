@@ -250,6 +250,7 @@ def main() -> None:
             ),
             checkpoints=RedisCheckpoints(redis),
             recipient=os.environ["NOTIFICATION_SLACK_DESTINATION_ID"],
+            additional_user_id=os.getenv("NOTIFICATION_SLACK_ADDITIONAL_USER_ID", "U03PQMKUR6J"),
         )
         runner = RedisListRunner(redis, processor, queue=queue)
         while True:

@@ -6,6 +6,8 @@ The separate single-consumer automation worker moves the oldest pending job to a
 
 The worker uses a separate HTTP client for QBO Gateway and authenticated HTTP clients for n8n lookup and dispatch. Both n8n webhooks use the same dedicated Header Auth credential; QBO credentials are never sent to n8n. The Router has published `POST /webhook/automation/notification-router/v1` for delivery and `POST /webhook/automation/notification-ledger/last-sent/v1` for read-only confirmed-delivery lookup. The lookup fixes channel and recipient to the approved Slack DM and returns only the latest timestamp or null; the worker can additionally filter by episode scope. Neither the worker nor Airflow uses the n8n Data Tables API directly. The Router's delivery adapter limits webhook input to QBO disconnection for the approved Slack DM before entering shared routing logic. A fictional sandbox event confirmed one Slack delivery and retry suppression; the lookup returned the recorded timestamp and rejected an unauthenticated request with 403. The worker remains undeployed outside tests.
 
+On `feature/entity-activation-control`, the QBO disconnect worker now prepares independent webhook requests for the original Slack DM and one additional Slack user. Delivery lookup, 48-hour reminders, request IDs, and retry completion are per recipient. The Router's QBO webhook allowlist and sent-ledger lookup were published on 2026-10-28 to accept either approved recipient, defaulting legacy lookups to the original DM. Other notification events and Airflow are unchanged.
+
 ## Evidence
 
 - `README.md`

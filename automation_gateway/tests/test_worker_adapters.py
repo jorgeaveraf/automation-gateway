@@ -102,6 +102,7 @@ def test_notification_adapter_requires_explicit_sent_timestamp():
         assert payload == {
             "client_id": str(CLIENT_ID),
             "environment": "sandbox",
+            "recipient": "D0B3LSR4C1Y",
             "notification_scope_key": "scope",
         }
         return httpx.Response(200, json={
@@ -151,6 +152,24 @@ def test_notification_adapter_fails_closed_on_missing_result():
                 recipient="D0B3LSR4C1Y",
                 scope="scope",
             )
+
+
+def test_notification_lookup_selects_additional_user():
+    def handler(request):
+        assert json.loads(request.content)["recipient"] == "U03PQMKUR6J"
+        return httpx.Response(200, json={
+            "result_type": "notification_ledger.last_sent.v1",
+            "last_notified_at": None,
+        })
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as ledger_client, httpx.Client() as router_client:
+        adapter = NotificationRouterAdapter(
+            ledger_client, router_client,
+            ledger_url="http://n8n.local/ledger", router_url="http://n8n.local/router",
+        )
+        assert adapter.last_sent_at(
+            client_id=CLIENT_ID, environment="prod", recipient="U03PQMKUR6J", scope=None,
+        ) is None
 
 
 @pytest.mark.parametrize(

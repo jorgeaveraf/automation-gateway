@@ -38,6 +38,7 @@ services:
       NOTIFICATION_ROUTER_URL: http://sandbox-mock:8000/router
       NOTIFICATION_ROUTER_API_KEY: local-sandbox-test-only
       NOTIFICATION_SLACK_DESTINATION_ID: D0B3LSR4C1Y
+      NOTIFICATION_SLACK_ADDITIONAL_USER_ID: U03PQMKUR6J
       NOTIFICATION_ROUTER_RULE_READY: "true"
     depends_on:
       - redis
