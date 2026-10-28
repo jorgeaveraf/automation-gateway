@@ -58,6 +58,8 @@ class StoredConnection:
     is_connected: bool
     checked_at: datetime | None
     client_name: str
+    client_status: str = "active"
+    client_updated_at: datetime | None = None
 
 
 class QboPort(Protocol):
@@ -101,9 +103,24 @@ class ConnectionProcessor:
         self.reminder_window = timedelta(hours=reminder_hours)
         self.now = now or (lambda: datetime.now(UTC))
 
+    def _skip_ineligible_client(
+        self, event_id: UUID, job: ConnectionJob, current: StoredConnection
+    ) -> str | None:
+        if current.client_status == "inactive":
+            self.checkpoints.set(event_id, "done", "inactive")
+            return "inactive"
+        if current.client_updated_at and current.client_updated_at > job.checked_at:
+            self.checkpoints.set(event_id, "done", "superseded")
+            return "superseded"
+        return None
+
     def process(self, event_id: UUID, job: ConnectionJob) -> str:
         if self.checkpoints.get(event_id, "done"):
             return "duplicate"
+
+        skipped = self._skip_ineligible_client(event_id, job, self.qbo.current(job))
+        if skipped:
+            return skipped
 
         if not self.checkpoints.get(event_id, "persisted"):
             outcome = self.qbo.update(job)
@@ -112,6 +129,9 @@ class ConnectionProcessor:
             self.checkpoints.set(event_id, "persisted", outcome)
 
         current = self.qbo.current(job)
+        skipped = self._skip_ineligible_client(event_id, job, current)
+        if skipped:
+            return skipped
         if current.checked_at is None:
             raise ValueError("QBO status has no checked_at after persistence")
         current_time = current.checked_at.astimezone(UTC)
@@ -207,6 +227,9 @@ class ConnectionProcessor:
             },
             "compatibility": {"response_profile": "default", "original_input_index": 0},
         }
+        skipped = self._skip_ineligible_client(event_id, job, self.qbo.current(job))
+        if skipped:
+            return skipped
         self.notifications.send(request)
         confirmed = self.notifications.last_sent_at(
             client_id=job.client_id,

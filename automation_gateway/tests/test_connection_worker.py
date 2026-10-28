@@ -12,10 +12,12 @@ NOW = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
 
 
 class FakeQbo:
-    def __init__(self, connected=False, current_time=NOW, outcome="updated"):
+    def __init__(self, connected=False, current_time=NOW, outcome="updated", status="active", updated_at=None):
         self.connected = connected
         self.current_time = current_time
         self.outcome = outcome
+        self.status = status
+        self.updated_at = updated_at
         self.updates = 0
 
     def update(self, job):
@@ -26,7 +28,7 @@ class FakeQbo:
         return self.outcome
 
     def current(self, _job):
-        return StoredConnection(self.connected, self.current_time, "ACME Sandbox")
+        return StoredConnection(self.connected, self.current_time, "ACME Sandbox", self.status, self.updated_at)
 
 
 class FakeLedger:
@@ -110,6 +112,37 @@ def test_disconnected_sends_router_contract_once():
     assert request["context"]["communication"]["destination_type"] == "channel"
     assert request["context"]["communication"]["recipient"] == "D0B3LSR4C1Y"
     assert checkpoints.get_episode(CLIENT_ID, "sandbox") == str(EVENT_ID)
+
+
+def test_inactive_client_skips_queued_job_without_updating_or_notifying():
+    processor, qbo, ledger, checkpoints = make_processor(qbo=FakeQbo(status="inactive"))
+    assert processor.process(EVENT_ID, make_job()) == "inactive"
+    assert qbo.updates == 0
+    assert ledger.sent == []
+    assert checkpoints.get(EVENT_ID, "done") == "inactive"
+
+
+def test_deactivation_after_persist_suppresses_notification():
+    qbo = FakeQbo()
+    ledger = FakeLedger()
+    processor, _, _, checkpoints = make_processor(qbo=qbo, ledger=ledger)
+    def deactivate_before_send(**_kwargs):
+        qbo.status = "inactive"
+        return None
+    ledger.last_sent_at = deactivate_before_send
+    assert processor.process(EVENT_ID, make_job()) == "inactive"
+    assert qbo.updates == 1
+    assert ledger.sent == []
+    assert checkpoints.get(EVENT_ID, "done") == "inactive"
+
+
+def test_old_queued_check_is_ignored_after_reactivation():
+    qbo = FakeQbo(status="active", updated_at=NOW + timedelta(minutes=1))
+    processor, _, ledger, checkpoints = make_processor(qbo=qbo)
+    assert processor.process(EVENT_ID, make_job()) == "superseded"
+    assert qbo.updates == 0
+    assert ledger.sent == []
+    assert checkpoints.get(EVENT_ID, "done") == "superseded"
 
 
 def test_previous_delivery_within_48_hours_suppresses():
